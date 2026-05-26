@@ -155,27 +155,6 @@ fn _lock_value() -> String {
     .unwrap_or_else(|_| "processing".to_string())
 }
 
-pub const IDEMPOTENCY_KEY_MAX_LENGTH: usize = 255;
-
-pub fn validate_idempotency_key(key: &str) -> Result<String, String> {
-    let trimmed = key.trim().to_string();
-    if trimmed.is_empty() {
-        return Err("Idempotency key must not be empty".to_string());
-    }
-    if trimmed.len() > IDEMPOTENCY_KEY_MAX_LENGTH {
-        return Err(format!(
-            "Idempotency key must not exceed {IDEMPOTENCY_KEY_MAX_LENGTH} characters"
-        ));
-    }
-    if trimmed
-        .chars()
-        .any(|c| c.is_control() || c == ' ' || c == '@' || c == '/')
-    {
-        return Err("Idempotency key contains invalid characters".to_string());
-    }
-    Ok(trimmed)
-}
-
 impl IdempotencyService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -203,11 +182,11 @@ impl IdempotencyService {
 
     pub async fn check_idempotency(
         &self,
-        _tenant_id: &str,
+        tenant_id: &str,
         key: &str,
     ) -> Result<IdempotencyStatus, Box<dyn std::error::Error + Send + Sync>> {
-        let cache_key = format!("idempotency:{key}");
-        let lock_key = format!("idempotency:lock:{key}");
+        let cache_key = _cache_key(tenant_id, key);
+        let lock_key = _lock_key(tenant_id, key);
 
         match self.client.get_multiplexed_async_connection().await {
             Ok(mut conn) => {
@@ -317,14 +296,14 @@ impl IdempotencyService {
 
     pub async fn store_response(
         &self,
-        _tenant_id: &str,
+        tenant_id: &str,
         key: &str,
         status: u16,
         body: String,
         content_type: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let cache_key = format!("idempotency:{key}");
-        let lock_key = format!("idempotency:lock:{key}");
+        let cache_key = _cache_key(tenant_id, key);
+        let lock_key = _lock_key(tenant_id, key);
 
         let cached = CachedResponse {
             status,
@@ -378,9 +357,10 @@ impl IdempotencyService {
 
     pub async fn release_lock(
         &self,
+        tenant_id: &str,
         key: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let lock_key = format!("idempotency:lock:{key}");
+        let lock_key = _lock_key(tenant_id, key);
 
         match self.client.get_multiplexed_async_connection().await {
             Ok(mut conn) => {
@@ -421,7 +401,7 @@ impl IdempotencyService {
         Ok(acquired)
     }
 
-    /// Returns the circuit breaker state: `"open"` or `"closed"`.
+    /// Returns the circuit breaker state: always `"closed"` (no CB in this service).
     pub fn circuit_state(&self) -> String {
         "closed".to_string()
     }
@@ -589,7 +569,7 @@ pub async fn idempotency_middleware(
 
                 client_response
             } else {
-                if let Err(e) = service.release_lock(&idempotency_key).await {
+                if let Err(e) = service.release_lock(&tenant_id, &idempotency_key).await {
                     tracing::error!("Failed to release idempotency lock: {}", e);
                 }
                 response
@@ -649,6 +629,37 @@ pub async fn idempotency_middleware(
             next.run(request).await
         }
     }
+}
+
+pub const IDEMPOTENCY_KEY_MAX_LENGTH: usize = 255;
+
+/// Validate and normalise an idempotency key.
+/// - Trims surrounding whitespace
+/// - Rejects empty / whitespace-only keys
+/// - Rejects keys exceeding [`IDEMPOTENCY_KEY_MAX_LENGTH`]
+/// - Rejects keys containing characters outside `[A-Za-z0-9\-_.]`
+pub fn validate_idempotency_key(key: &str) -> Result<String, crate::error::AppError> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::AppError::BadRequest(
+            "Idempotency key must not be empty".into(),
+        ));
+    }
+    if trimmed.len() > IDEMPOTENCY_KEY_MAX_LENGTH {
+        return Err(crate::error::AppError::BadRequest(format!(
+            "Idempotency key exceeds maximum length of {}",
+            IDEMPOTENCY_KEY_MAX_LENGTH
+        )));
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(crate::error::AppError::BadRequest(
+            "Idempotency key contains invalid characters".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
 }
 
 #[cfg(test)]

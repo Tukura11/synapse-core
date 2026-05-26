@@ -1,5 +1,7 @@
 # Synapse Core – Phase 1: Fiat Gateway Callback Processor
 
+[![codecov](https://codecov.io/gh/Synapse-bridgez/synapse-core/branch/develop/graph/badge.svg)](https://codecov.io/gh/Synapse-bridgez/synapse-core)
+
 Synapse Core is the first component of the Synapse Bridge project. It acts as a **callback processor** for the Stellar Anchor Platform, handling fiat-to-Stellar deposit events. When a user deposits fiat currency (e.g., USD) via an anchor, this service receives a webhook, stores the transaction, and prepares it for the next phases (swap and cross-chain bridging).
 
 This repository is part of the larger Synapse Bridge ecosystem. It is designed to be run alongside the Stellar Anchor Platform and a PostgreSQL database.
@@ -158,13 +160,25 @@ The Stellar Horizon client includes a circuit breaker to prevent cascading failu
 - Configurable failure threshold and reset timeout
 - See [docs/circuit-breaker.md](docs/circuit-breaker.md) for detailed documentation
 
-🤝 Contributing
-We welcome contributions! Please see the open issues for tasks labeled phase-1. Each issue includes a description and acceptance criteria.
-When contributing:
-Fork the repository and create a branch from main.
-Write clear, tested code.
-Ensure cargo fmt and cargo clippy pass.
-Open a pull request with a description of your changes.
+## 🤝 Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
+
+- Development setup and workflow
+- Code style and conventions
+- Testing requirements
+- Pull request process
+- Architecture Decision Records (ADRs)
+
+**Quick start for contributors:**
+
+1. Fork the repository and create a branch from `develop`
+2. Set up your development environment (see [CONTRIBUTING.md](CONTRIBUTING.md))
+3. Write clear, tested code following our style guide
+4. Ensure all checks pass: `cargo fmt`, `cargo clippy`, `cargo build`, `cargo test`
+5. Open a pull request against `develop` with a clear description
+
+See the [open issues](https://github.com/synapse-bridgez/synapse-core/issues) for tasks labeled `phase-1` or `good-first-issue`.
 
 📄 License
 This project is licensed under the MIT License. See the LICENSE file for details.

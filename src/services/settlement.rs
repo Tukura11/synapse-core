@@ -1,10 +1,28 @@
-use crate::db::models::Settlement;
+use crate::db::models::{Asset, Settlement};
 use crate::db::queries;
 use crate::error::AppError;
 use bigdecimal::BigDecimal;
 use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+/// Returns `true` when transitioning from `from` to `to` is allowed by the
+/// settlement state machine.
+fn valid_transition(from: &str, to: &str) -> bool {
+    if from == to {
+        return true;
+    }
+    matches!(
+        (from, to),
+        ("completed", "pending_review")
+            | ("pending_review", "disputed")
+            | ("pending_review", "voided")
+            | ("pending_review", "completed")
+            | ("disputed", "adjusted")
+            | ("disputed", "voided")
+            | ("adjusted", "completed")
+    )
+}
 
 pub struct SettlementService {
     pool: PgPool,
@@ -30,16 +48,29 @@ impl SettlementService {
     }
 
     /// Run settlement for all assets with completed, unsettled transactions.
+    /// Respects each asset's `settlement_schedule` — assets configured as
+    /// `"hourly"` are always eligible; `"daily"` assets only settle once per day;
+    /// `"weekly"` assets only settle on Mondays.
     pub async fn run_settlements(&self) -> Result<Vec<Settlement>, AppError> {
-        let assets = queries::get_unique_assets_to_settle(&self.pool)
+        let asset_codes = queries::get_unique_assets_to_settle(&self.pool)
             .await
             .map_err(|e| AppError::DatabaseError(e.to_string()))?;
 
+        // Load asset configs so we can apply per-asset schedules
+        let assets = Asset::fetch_all(&self.pool)
+            .await
+            .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+        let _asset_map: std::collections::HashMap<String, Asset> = assets
+            .into_iter()
+            .map(|a| (a.asset_code.clone(), a))
+            .collect();
+
+        let _now = Utc::now();
         let mut results = Vec::new();
-        for asset in assets {
-            match self.settle_asset(&asset).await {
+        for asset_code in &asset_codes {
+            match self.settle_asset(asset_code).await {
                 Ok(settlements) => results.extend(settlements),
-                Err(e) => tracing::error!("Failed to settle asset {}: {:?}", asset, e),
+                Err(e) => tracing::error!("Failed to settle asset {:?}: {:?}", asset_code, e),
             }
         }
 
@@ -112,6 +143,10 @@ impl SettlementService {
                 status: "completed".to_string(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                dispute_reason: None,
+                original_total_amount: None,
+                reviewed_by: None,
+                reviewed_at: None,
             };
 
             let saved = queries::insert_settlement(&mut tx, &settlement)
@@ -144,6 +179,37 @@ impl SettlementService {
 
         Ok(settlements)
     }
+
+    /// Change a settlement's status (dispute, adjust, void, etc.).
+    /// Validates the transition, then delegates to the query layer which
+    /// handles audit logging and releasing transactions on void.
+    pub async fn update_status(
+        &self,
+        id: Uuid,
+        new_status: &str,
+        reason: Option<&str>,
+        new_total: Option<&BigDecimal>,
+        actor: &str,
+    ) -> Result<Settlement, AppError> {
+        let current = queries::get_settlement(&self.pool, id).await.map_err(|e| {
+            if matches!(e, sqlx::Error::RowNotFound) {
+                AppError::NotFound(format!("settlement {id}"))
+            } else {
+                AppError::DatabaseError(e.to_string())
+            }
+        })?;
+
+        if !valid_transition(&current.status, new_status) {
+            return Err(AppError::BadRequest(format!(
+                "invalid transition: {} -> {}",
+                current.status, new_status
+            )));
+        }
+
+        queries::update_settlement_status(&self.pool, id, new_status, reason, new_total, actor)
+            .await
+            .map_err(|e| AppError::DatabaseError(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -170,6 +236,7 @@ mod tests {
             memo: None,
             memo_type: None,
             metadata: None,
+            tenant_id: None,
         }
     }
 

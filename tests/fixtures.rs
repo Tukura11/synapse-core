@@ -54,6 +54,7 @@ impl Default for TransactionFixture {
     }
 }
 
+#[allow(dead_code)]
 impl TransactionFixture {
     pub fn new() -> Self {
         Self::default()
@@ -133,6 +134,7 @@ impl TransactionFixture {
             memo: self.memo,
             memo_type: self.memo_type,
             metadata: self.metadata,
+            tenant_id: None,
         }
     }
 

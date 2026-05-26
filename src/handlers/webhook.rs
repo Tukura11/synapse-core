@@ -375,9 +375,7 @@ pub async fn callback(
         payload.metadata,
     );
 
-    let inserted = queries::insert_transaction(&state.app_state.db, &tx)
-        .await
-        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    let inserted = queries::insert_transaction(&state.app_state.db, &tx).await?;
 
     Ok((StatusCode::CREATED, Json(inserted)).into_response())
 }
@@ -397,7 +395,7 @@ pub async fn callback(
 pub async fn handle_webhook(
     State(_state): State<ApiState>,
     Json(payload): Json<WebhookPayload>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     tracing::info!("Processing webhook with id: {}", payload.id);
 
     let response = WebhookResponse {
@@ -405,7 +403,7 @@ pub async fn handle_webhook(
         message: format!("Webhook {} processed successfully", payload.id),
     };
 
-    (StatusCode::OK, Json(response))
+    Ok((StatusCode::OK, Json(response)))
 }
 
 /// Get a specific transaction
@@ -440,10 +438,9 @@ pub async fn get_transaction(
 
     let mut response: Response = Json(transaction).into_response();
     if replica_used {
-        response.headers_mut().insert(
-            "X-Read-Consistency",
-            HeaderValue::from_static("eventual"),
-        );
+        response
+            .headers_mut()
+            .insert("X-Read-Consistency", HeaderValue::from_static("eventual"));
     }
 
     Ok(response)
@@ -455,6 +452,10 @@ pub struct ListQuery {
     pub limit: Option<i64>,
     /// direction: "forward" (older items) or "backward" (newer items)
     pub direction: Option<String>,
+    /// ISO 8601 start date filter (inclusive): e.g. 2024-01-01T00:00:00Z
+    pub from_date: Option<String>,
+    /// ISO 8601 end date filter (exclusive): e.g. 2024-02-01T00:00:00Z
+    pub to_date: Option<String>,
 }
 
 #[utoipa::path(
@@ -487,12 +488,49 @@ pub async fn list_transactions(
         None
     };
 
+    // Parse optional date range filters
+    let from_date = if let Some(ref s) = params.from_date {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    AppError::BadRequest(format!("invalid from_date: '{}', expected ISO 8601", s))
+                })?,
+        )
+    } else {
+        None
+    };
+    let to_date = if let Some(ref s) = params.to_date {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    AppError::BadRequest(format!("invalid to_date: '{}', expected ISO 8601", s))
+                })?,
+        )
+    } else {
+        None
+    };
+    if let (Some(from), Some(to)) = (from_date, to_date) {
+        if from >= to {
+            return Err(AppError::BadRequest(
+                "from_date must be before to_date".to_string(),
+            ));
+        }
+    }
+
     // fetch one extra to determine has_more
     let fetch_limit = limit + 1;
     let (pool, replica_used) = state.pool_manager.read_pool().await;
-    let mut rows = queries::list_transactions(pool, fetch_limit, decoded_cursor, backward)
-        .await
-        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    let mut rows = queries::list_transactions_filtered(
+        pool,
+        fetch_limit,
+        decoded_cursor,
+        backward,
+        from_date,
+        to_date,
+    )
+    .await?;
 
     let has_more = rows.len() as i64 > limit;
     if has_more {
@@ -514,10 +552,9 @@ pub async fn list_transactions(
 
     let mut response: Response = (StatusCode::OK, Json(resp)).into_response();
     if replica_used {
-        response.headers_mut().insert(
-            "X-Read-Consistency",
-            HeaderValue::from_static("eventual"),
-        );
+        response
+            .headers_mut()
+            .insert("X-Read-Consistency", HeaderValue::from_static("eventual"));
     }
 
     Ok(response)
@@ -530,7 +567,6 @@ pub async fn list_transactions_api(
 ) -> Result<impl IntoResponse, AppError> {
     // forward to the AppState-based handler
     let app_state = api_state.app_state;
-    // call the inner logic directly to avoid extractor conflicts
     let limit = params.limit.unwrap_or(25).min(100);
     let backward = params.direction.as_deref() == Some("backward");
 
@@ -543,11 +579,47 @@ pub async fn list_transactions_api(
         None
     };
 
+    let from_date = if let Some(ref s) = params.from_date {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    AppError::BadRequest(format!("invalid from_date: '{}', expected ISO 8601", s))
+                })?,
+        )
+    } else {
+        None
+    };
+    let to_date = if let Some(ref s) = params.to_date {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| {
+                    AppError::BadRequest(format!("invalid to_date: '{}', expected ISO 8601", s))
+                })?,
+        )
+    } else {
+        None
+    };
+    if let (Some(from), Some(to)) = (from_date, to_date) {
+        if from >= to {
+            return Err(AppError::BadRequest(
+                "from_date must be before to_date".to_string(),
+            ));
+        }
+    }
+
     let fetch_limit = limit + 1;
     let (pool, replica_used) = app_state.pool_manager.read_pool().await;
-    let mut rows = queries::list_transactions(pool, fetch_limit, decoded_cursor, backward)
-        .await
-        .map_err(|e| AppError::DatabaseError(e.to_string()))?;
+    let mut rows = queries::list_transactions_filtered(
+        pool,
+        fetch_limit,
+        decoded_cursor,
+        backward,
+        from_date,
+        to_date,
+    )
+    .await?;
 
     let has_more = rows.len() as i64 > limit;
     if has_more {
@@ -568,10 +640,9 @@ pub async fn list_transactions_api(
 
     let mut response: Response = (StatusCode::OK, Json(resp)).into_response();
     if replica_used {
-        response.headers_mut().insert(
-            "X-Read-Consistency",
-            HeaderValue::from_static("eventual"),
-        );
+        response
+            .headers_mut()
+            .insert("X-Read-Consistency", HeaderValue::from_static("eventual"));
     }
 
     Ok(response)
