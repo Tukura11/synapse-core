@@ -17,6 +17,9 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::health::DependencySeverity;
 
+pub mod ws_error;
+use ws_error::{validate_ws_token, validate_message_size, validate_message_structure};
+
 /// How often to send a ping frame to the client.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -74,9 +77,15 @@ pub async fn ws_handler(
     connect_info: Option<ConnectInfo<SocketAddr>>,
 ) -> impl IntoResponse {
     let token = match params.token {
-        Some(t) if validate_token(&t) => t,
-        _ => {
-            tracing::warn!("Invalid WebSocket authentication token");
+        Some(t) => match validate_ws_token(&t) {
+            Ok(_) => t,
+            Err(_) => {
+                tracing::warn!("Invalid WebSocket authentication token");
+                return axum::http::StatusCode::UNAUTHORIZED.into_response();
+            }
+        },
+        None => {
+            tracing::warn!("Missing WebSocket authentication token");
             return axum::http::StatusCode::UNAUTHORIZED.into_response();
         }
     };
@@ -240,6 +249,17 @@ async fn handle_client_message(
     state: &AppState,
     client_addr: &str,
 ) {
+    // Validate message size first
+    if let Err(e) = validate_message_size(text) {
+        tracing::warn!(
+            client_addr = %client_addr,
+            error = %e,
+            "Message size validation failed"
+        );
+        return;
+    }
+
+    // Validate message structure
     let msg: ClientMessage = match serde_json::from_str(text) {
         Ok(m) => m,
         Err(_) => {
