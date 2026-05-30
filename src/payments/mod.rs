@@ -1,2 +1,4 @@
-pub mod input_validation;
-pub mod error;
+/// Payments module — settlement logic and data export.
+pub mod export;
+
+pub use export::*;
