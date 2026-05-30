@@ -5,7 +5,18 @@
 
 use std::fmt;
 
-/// Errors that can occur during telemetry operations
+/// Errors that can occur during telemetry operations.
+///
+/// # Health Check Implications
+///
+/// Different error types have different implications for the health check:
+/// - **InitializationError**, **ExporterConfigError**, **InvalidEndpoint**: Fatal configuration errors.
+///   The caller should fail fast and not retry.
+/// - **ExportError**, **ConnectionError**, **Timeout**: Transient exporter failures.
+///   The caller should retry with backoff via the circuit breaker.
+/// - **ValidationError**: Invalid input data. The caller should fail fast and not retry.
+/// - **CircuitBreakerOpen**: The exporter is unavailable. The application should degrade gracefully
+///   (no-op telemetry) and wait for auto-recovery.
 #[derive(Debug, thiserror::Error)]
 pub enum TelemetryError {
     /// Error initializing the tracer provider
@@ -48,7 +59,16 @@ pub enum TelemetryError {
 /// Result type for telemetry operations
 pub type TelemetryResult<T> = Result<T, TelemetryError>;
 
-/// Error handler for telemetry operations
+/// Handles telemetry errors and determines recovery strategy.
+///
+/// # Health Check
+///
+/// Monitors the health of telemetry operations by tracking consecutive errors and
+/// determining whether to fail fast or continue with graceful degradation.
+/// - **Fail-fast mode**: Stops immediately on any error.
+/// - **Threshold mode**: Continues until error count exceeds threshold, then stops.
+/// - **Graceful degradation**: Returns `Continue` for transient errors until threshold,
+///   allowing the application to proceed with no-op telemetry.
 #[derive(Debug, Clone)]
 pub struct ErrorHandler {
     /// Whether to fail fast on errors or continue with degraded functionality
@@ -60,7 +80,12 @@ pub struct ErrorHandler {
 }
 
 impl ErrorHandler {
-    /// Creates a new error handler with default settings
+    /// Creates a new error handler with default settings (threshold: 10, no fail-fast).
+    ///
+    /// # Health Check
+    ///
+    /// Returns a healthy error handler that allows up to 10 consecutive errors
+    /// before returning `Stop`. Useful for graceful degradation.
     pub fn new() -> Self {
         Self {
             fail_fast: false,
@@ -69,7 +94,12 @@ impl ErrorHandler {
         }
     }
 
-    /// Creates an error handler that fails immediately on any error
+    /// Creates an error handler that fails immediately on any error.
+    ///
+    /// # Health Check
+    ///
+    /// Returns a strict error handler that rejects all errors immediately with `Stop`.
+    /// Use this for critical telemetry that must not degrade.
     pub fn fail_fast() -> Self {
         Self {
             fail_fast: true,
@@ -78,7 +108,12 @@ impl ErrorHandler {
         }
     }
 
-    /// Creates an error handler with custom threshold
+    /// Creates an error handler with custom error threshold.
+    ///
+    /// # Health Check
+    ///
+    /// Returns an error handler that tolerates up to `threshold` consecutive errors
+    /// before returning `Stop`. The threshold allows for transient failures.
     pub fn with_threshold(threshold: usize) -> Self {
         Self {
             fail_fast: false,
@@ -87,7 +122,15 @@ impl ErrorHandler {
         }
     }
 
-    /// Records an error and determines if operation should continue
+    /// Records an error and determines the recovery action.
+    ///
+    /// # Health Check
+    ///
+    /// - `FailFast` on validation or circuit breaker errors (caller should not retry).
+    /// - `Stop` when the error threshold is exceeded (graceful degradation).
+    /// - `Continue` otherwise, allowing the operation to retry.
+    ///
+    /// The handler logs each error with counts and threshold for observability.
     pub fn handle_error(&mut self, error: &TelemetryError) -> ErrorAction {
         self.error_count += 1;
 
@@ -119,17 +162,32 @@ impl ErrorHandler {
         }
     }
 
-    /// Resets the error count after successful operation
+    /// Resets the error count after successful operation.
+    ///
+    /// # Health Check
+    ///
+    /// Call this after a successful telemetry operation to reset the error counter.
+    /// This allows the handler to tolerate new transient errors.
     pub fn reset(&mut self) {
         self.error_count = 0;
     }
 
-    /// Returns the current error count
+    /// Returns the current error count.
+    ///
+    /// # Health Check
+    ///
+    /// A count of zero indicates healthy operation. Counts approaching the threshold
+    /// indicate the exporter may be degrading.
     pub fn error_count(&self) -> usize {
         self.error_count
     }
 
-    /// Checks if error threshold has been exceeded
+    /// Checks if the error threshold has been exceeded.
+    ///
+    /// # Health Check
+    ///
+    /// Returns true if `error_count >= error_threshold`. When true, the handler will
+    /// return `Stop` on the next error, and graceful degradation should be applied.
     pub fn threshold_exceeded(&self) -> bool {
         self.error_count >= self.error_threshold
     }
@@ -141,7 +199,14 @@ impl Default for ErrorHandler {
     }
 }
 
-/// Action to take after handling an error
+/// Action to take after handling a telemetry error.
+///
+/// # Health Check
+///
+/// Determines how the application should respond to a telemetry error:
+/// - `Continue`: The error is transient; retry with backoff (transient failures under threshold).
+/// - `Stop`: Gracefully degrade to no-op telemetry; do not retry (threshold exceeded or circuit open).
+/// - `FailFast`: Fatal error; do not retry (validation or configuration error).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorAction {
     /// Continue operation despite error
