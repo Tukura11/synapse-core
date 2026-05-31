@@ -34,6 +34,12 @@ jobs:
       matrix:
         rust: [stable]
 
+    # Serialize external API calls (taiki-e install-action) to avoid GitHub API rate limits
+    # Multiple concurrent requests from install-action would quickly exhaust the rate limit
+    concurrency:
+      group: ${{ github.workflow }}-install-tools-${{ github.ref }}
+      cancel-in-progress: false
+
     # Limit job-level permissions to the minimum required.
     permissions:
       contents: read
@@ -187,6 +193,12 @@ jobs:
       matrix:
         rust: [stable]
 
+    # Serialize external API calls (taiki-e install-action) to avoid GitHub API rate limits
+    # This concurrency group ensures install-action calls are not made concurrently across jobs
+    concurrency:
+      group: ${{ github.workflow }}-install-tools-${{ github.ref }}
+      cancel-in-progress: false
+
     permissions:
       contents: read
 
@@ -288,6 +300,11 @@ jobs:
     needs:
       - unit-tests
       - integration-tests
+    # Serialize external API calls (codecov, taiki-e install-action) to reduce rate limit pressure
+    # Coverage job makes multiple external API requests; running sequentially prevents rate limit errors
+    concurrency:
+      group: ${{ github.workflow }}-external-api-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -423,6 +440,8 @@ jobs:
           target/llvm-cov/summary.json
         if-no-files-found: error
 
+    # Serialize external API upload (Codecov) to avoid overwhelming their rate limits
+    # Multiple workflows uploading simultaneously would increase 429 error probability
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
       with:
