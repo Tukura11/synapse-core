@@ -1,4 +1,5 @@
 pub mod account_monitor;
+pub mod circuit_breaker;
 pub mod backup;
 pub mod compliance;
 pub mod feature_flags;
