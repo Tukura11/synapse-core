@@ -1,4 +1,5 @@
 use crate::error::SynapseError;
+use crate::resources::transactions::Transactions;
 use crate::retry::{retry_with_backoff, DEFAULT_BASE_DELAY_MS, DEFAULT_MAX_ATTEMPTS};
 use serde::de::DeserializeOwned;
 
@@ -66,13 +67,66 @@ impl SynapseClient {
                 let status = resp.status().as_u16();
                 if status >= 400 {
                     let body = resp.text().await.unwrap_or_default();
-                    return Err(SynapseError::Http { status, body });
+                    let message = parse_error_message(&body).unwrap_or(body);
+                    return Err(SynapseError::Api { status, message });
                 }
-                resp.json::<T>().await.map_err(SynapseError::Network)
+                resp.json::<T>().await.map_err(|e| SynapseError::Decode(e.to_string()))
             }
         })
         .await
     }
+
+    /// Issue an authenticated GET request with query parameters and deserialize the JSON response.
+    pub async fn get_query<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<T, SynapseError> {
+        let url = format!("{}{}", self.base_url, path);
+        let key = self.api_key.clone();
+        let http = self.http.clone();
+        let query: Vec<(String, String)> = query
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        retry_with_backoff(self.max_attempts, self.base_delay_ms, || {
+            let url = url.clone();
+            let key = key.clone();
+            let http = http.clone();
+            let query = query.clone();
+            async move {
+                let resp = http
+                    .get(&url)
+                    .query(&query)
+                    .header("X-API-Key", &key)
+                    .send()
+                    .await
+                    .map_err(SynapseError::Network)?;
+                let status = resp.status().as_u16();
+                if status >= 400 {
+                    let body = resp.text().await.unwrap_or_default();
+                    let message = parse_error_message(&body).unwrap_or(body);
+                    return Err(SynapseError::Api { status, message });
+                }
+                resp.json::<T>().await.map_err(|e| SynapseError::Decode(e.to_string()))
+            }
+        })
+        .await
+    }
+
+    /// Return a handle for the transactions resource.
+    pub fn transactions(&self) -> Transactions<'_> {
+        Transactions { client: self }
+    }
+}
+
+fn parse_error_message(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    v.get("error")
+        .or_else(|| v.get("detail"))
+        .or_else(|| v.get("message"))
+        .and_then(|f| f.as_str())
+        .map(|s| s.to_string())
 }
 
 impl SynapseClientBuilder {
