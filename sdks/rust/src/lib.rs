@@ -7,6 +7,7 @@
 //! # License
 //! This crate is distributed under the terms of the MIT license.
 
+pub mod admin;
 pub mod client;
 pub mod error;
 pub mod models;
@@ -14,6 +15,7 @@ pub mod pagination;
 pub mod resources;
 pub mod retry;
 
+pub use admin::AdminClient;
 pub use client::{SynapseClient, SynapseClientBuilder};
 pub use error::SynapseError;
 pub use models::{ListParams, SearchParams, Transaction, TransactionList, TransactionSearch};

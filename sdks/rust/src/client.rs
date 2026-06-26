@@ -1,3 +1,4 @@
+use crate::admin::AdminClient;
 use crate::error::SynapseError;
 use crate::resources::transactions::Transactions;
 use crate::retry::{retry_with_backoff, DEFAULT_BASE_DELAY_MS, DEFAULT_MAX_ATTEMPTS};
@@ -118,9 +119,21 @@ impl SynapseClient {
     pub fn transactions(&self) -> Transactions<'_> {
         Transactions { client: self }
     }
+
+    /// Return an [`AdminClient`] that authenticates with `admin_key` via
+    /// `Authorization: Bearer`, sharing the underlying HTTP connection pool.
+    pub fn as_admin(&self, admin_key: impl Into<String>) -> AdminClient {
+        AdminClient::new(
+            self.http.clone(),
+            self.base_url.clone(),
+            admin_key.into(),
+            self.max_attempts,
+            self.base_delay_ms,
+        )
+    }
 }
 
-fn parse_error_message(body: &str) -> Option<String> {
+pub(crate) fn parse_error_message(body: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     v.get("error")
         .or_else(|| v.get("detail"))
