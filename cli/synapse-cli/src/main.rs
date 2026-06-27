@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, Command};
+use clap_complete::{generate, Shell};
+use std::io;
 use synapse_cli::{CliError, handle_error};
 
 #[derive(Parser)]
@@ -105,14 +107,23 @@ async fn handle_settlement(cmd: SettlementCommands) -> Result<(), CliError> {
 }
 
 fn handle_completions(shell: &str) -> Result<(), CliError> {
-    match shell {
-        "bash" | "zsh" | "fish" => {
-            println!("# Completions for {}", shell);
-            Ok(())
+    let shell_enum = match shell {
+        "bash" => Shell::Bash,
+        "zsh" => Shell::Zsh,
+        "fish" => Shell::Fish,
+        _ => {
+            return Err(CliError::Other(format!(
+                "Unsupported shell: {}. Supported shells: bash, zsh, fish",
+                shell
+            )))
         }
-        _ => Err(CliError::Other(format!(
-            "Unsupported shell: {}. Supported shells: bash, zsh, fish",
-            shell
-        ))),
-    }
+    };
+
+    let mut cmd = build_cli_command();
+    generate(shell_enum, &mut cmd, "synapse", &mut io::stdout());
+    Ok(())
+}
+
+fn build_cli_command() -> Command {
+    Cli::command()
 }
