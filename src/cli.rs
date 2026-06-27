@@ -63,6 +63,49 @@ pub enum TxCommands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+
+    /// Search transactions by filters
+    Search {
+        /// Transaction status (pending, processing, completed, failed)
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Asset code (e.g., USD)
+        #[arg(long)]
+        asset_code: Option<String>,
+
+        /// Minimum amount (inclusive)
+        #[arg(long)]
+        min_amount: Option<String>,
+
+        /// Maximum amount (inclusive)
+        #[arg(long)]
+        max_amount: Option<String>,
+
+        /// Start date (ISO 8601 format, inclusive)
+        #[arg(long)]
+        from: Option<String>,
+
+        /// End date (ISO 8601 format, exclusive)
+        #[arg(long)]
+        to: Option<String>,
+
+        /// Stellar account to filter by
+        #[arg(long)]
+        stellar_account: Option<String>,
+
+        /// Pagination cursor
+        #[arg(long)]
+        cursor: Option<String>,
+
+        /// Maximum records per page
+        #[arg(long, default_value = "25")]
+        limit: i64,
+
+        /// Output format (json or table)
+        #[arg(long, default_value = "table")]
+        format: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -402,6 +445,67 @@ pub async fn handle_settlements_get(config: &Config, id: &str, format: &str) -> 
         Err(e) => {
             tracing::error!("Failed to get settlement: {}", e);
             anyhow::bail!("Failed to get settlement: {}", e)
+        }
+    }
+}
+
+pub async fn handle_tx_search(
+    config: &Config,
+    status: Option<String>,
+    asset_code: Option<String>,
+    min_amount: Option<String>,
+    max_amount: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    stellar_account: Option<String>,
+    cursor: Option<String>,
+    limit: i64,
+    format: &str,
+) -> anyhow::Result<()> {
+    let base_url = format!("http://localhost:{}", config.server_port);
+    let api_key = std::env::var("SYNAPSE_API_KEY").unwrap_or_else(|_| "dev-key".to_string());
+
+    let client = synapse_sdk::SynapseClient::new(base_url, api_key);
+    let params = synapse_sdk::SearchParams {
+        status,
+        asset_code,
+        min_amount,
+        max_amount,
+        from,
+        to,
+        stellar_account,
+        cursor,
+        limit: Some(limit),
+    };
+
+    match client.transactions().search(params).await {
+        Ok(response) => {
+            match format {
+                "json" => {
+                    let json = serde_json::to_string_pretty(&response)?;
+                    println!("{}", json);
+                }
+                _ => {
+                    println!("{:<36} {:<12} {:<12} {:<15}", "ID", "Status", "Asset", "Amount");
+                    println!("{}", "-".repeat(75));
+                    for tx in &response.results {
+                        println!(
+                            "{:<36} {:<12} {:<12} {:<15}",
+                            tx.id, tx.status, tx.asset_code, tx.amount
+                        );
+                    }
+                    println!("\n✓ {} results (total: {}", response.results.len(), response.total);
+                    if response.next_cursor.is_some() {
+                        println!("  Use --cursor {} for next page", response.next_cursor.as_ref().unwrap());
+                    }
+                    println!();
+                }
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Failed to search transactions: {}", e);
+            anyhow::bail!("Failed to search transactions: {}", e)
         }
     }
 }

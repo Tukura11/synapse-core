@@ -103,6 +103,18 @@ async fn main() -> anyhow::Result<()> {
                 end,
                 format,
             } => cli::handle_tx_reconcile(&config, &account, &start, &end, &format).await,
+            TxCommands::Search {
+                status,
+                asset_code,
+                min_amount,
+                max_amount,
+                from,
+                to,
+                stellar_account,
+                cursor,
+                limit,
+                format,
+            } => cli::handle_tx_search(&config, status, asset_code, min_amount, max_amount, from, to, stellar_account, cursor, limit, &format).await,
         },
         Some(Commands::Settlements(settlements_cmd)) => match settlements_cmd {
             SettlementsCommands::List { format } => {
