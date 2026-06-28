@@ -1,32 +1,45 @@
 use serde::{Deserialize, Serialize};
 
-/// Current quota usage/limit snapshot for a tenant.
-///
-/// Mirrors the backend's `QuotaStatus` (`src/middleware/quota.rs`).
-#[derive(Debug, Clone, Deserialize)]
-pub struct QuotaStatus {
-    pub limit: u32,
-    pub used: u32,
-    pub remaining: u32,
-    pub reset_in_seconds: u64,
-}
-
-/// A tenant's quota configuration and current usage.
-///
-/// Mirrors the backend's `TenantQuotaView` (`src/handlers/admin/quota.rs`).
-/// `quota_status` is `None` if usage tracking is unavailable for this tenant
-/// (e.g. the quota backend could not be reached) — not an error on its own.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TenantQuotaView {
-    pub tenant_id: String,
-    pub name: String,
-    pub rate_limit_per_minute: i32,
-    pub quota_status: Option<QuotaStatus>,
-}
-
-/// Request body for [`crate::admin::QuotasClient::set`].
+/// Request body for [`crate::admin::AdminClient::bulk_update_status`].
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct SetQuotaRequest {
-    pub custom_limit: Option<u32>,
-    pub tier: Option<String>,
+pub(crate) struct BulkStatusRequest<'a> {
+    pub transaction_ids: &'a [String],
+    pub status: &'a str,
+}
+
+/// Per-transaction outcome when a bulk status update fails for that ID.
+///
+/// Mirrors the backend's `BulkUpdateError` (`src/db/queries.rs`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BulkUpdateError {
+    pub transaction_id: String,
+    pub error: String,
+}
+
+/// Result of [`crate::admin::AdminClient::bulk_update_status`].
+///
+/// `updated` and `failed` are counts; `errors` reports exactly which IDs
+/// failed and why. A partial failure is never collapsed into one opaque
+/// error — always check `errors` rather than inferring failure from `failed`
+/// alone, since it also gives you the per-ID reason.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BulkStatusResponse {
+    pub updated: usize,
+    pub failed: usize,
+    pub errors: Vec<BulkUpdateError>,
+}
+
+/// Health snapshot for a single webhook endpoint.
+///
+/// Mirrors the backend's `EndpointHealth`
+/// (`src/services/webhook_dispatcher.rs`). `success_rate` is a fraction in
+/// `[0.0, 1.0]`, not a percentage.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EndpointHealth {
+    pub id: String,
+    pub url: String,
+    pub enabled: bool,
+    pub success_rate: f64,
+    pub total_deliveries: i32,
+    pub last_success_at: Option<String>,
 }
