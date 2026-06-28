@@ -487,7 +487,7 @@ mod tests {
                         })
                     };
                 }
-                resp.json::<T>().await.map_err(SynapseError::Network)
+                resp.json::<T>().await.map_err(|e| SynapseError::Decode(e.to_string()))
             }
         })
         .await
