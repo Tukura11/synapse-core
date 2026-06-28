@@ -1,157 +1,139 @@
-# synapse-cli
+# Synapse CLI
 
-Command-line interface for the [Synapse API](https://github.com/Synapse-bridgez/synapse-core).
+Rust command-line interface for interacting with the Synapse API.
 
 ## Installation
 
 ```bash
-cargo build --release -p synapse-cli
-# binary at: target/release/synapse
+cd cli/synapse-cli
+cargo build --release
 ```
 
 ## Configuration
 
-| Option | Env var | Default |
-|---|---|---|
-| `--base-url` | `SYNAPSE_BASE_URL` | `http://localhost:3000` |
-| `--api-key` | `SYNAPSE_API_KEY` | _(empty)_ |
+Set API credentials via environment variables or CLI flags:
 
-## Health commands
+```bash
+export SYNAPSE_BASE_URL="https://api.synapse.example.com"
+export SYNAPSE_API_KEY="your-api-key-here"
+```
 
-### `synapse health live`
+Or pass them as CLI arguments:
 
-Liveness probe — returns HTTP 200 if the process is running. No dependency checks.
+```bash
+synapse --base-url https://api.synapse.example.com --api-key your-key transactions get <id>
+```
+
+## Commands
+
+### transactions get
+
+Fetch a single transaction by its UUID.
+
+**Usage:**
+```bash
+synapse transactions get <ID> [--format <FORMAT>]
+```
+
+**Arguments:**
+- `ID` - Transaction UUID (required)
+
+**Options:**
+- `--format <FORMAT>` - Output format: `table` (default) or `json`
+
+**Exit codes:**
+- `0` - Success
+- `1` - Transaction not found (HTTP 404) or other error
+
+#### Example: Table Output (Default)
+
+```bash
+$ synapse transactions get 550e8400-e29b-41d4-a716-446655440000
+ID	550e8400-e29b-41d4-a716-446655440000
+Status	pending
+Amount	100.00
+Asset	USD
 
 ```
-$ synapse health live
+
+#### Example: JSON Output
+
+```bash
+$ synapse transactions get 550e8400-e29b-41d4-a716-446655440000 --format json
 {
-  "status": "alive"
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "stellar_account": "GABC1234567890123456789012345678901234567890123456789012",
+  "amount": "100.00",
+  "asset_code": "USD",
+  "status": "pending",
+  "created_at": "2024-01-15T10:00:00Z",
+  "updated_at": "2024-01-15T10:00:00Z",
+  "anchor_transaction_id": null,
+  "callback_type": null,
+  "callback_status": null,
+  "settlement_id": null,
+  "memo": null,
+  "memo_type": null,
+  "metadata": null
 }
 ```
 
-```
-$ synapse health live --json
-{
-  "status": "alive"
-}
-```
+#### Example: Not-Found Error
 
-### `synapse health ready`
+```bash
+$ synapse transactions get 00000000-0000-0000-0000-000000000000
+transaction not found: Transaction 00000000 not found
 
-Readiness probe — returns `ready` when the service can accept traffic, `not_ready` when draining.
-
-```
-$ synapse health ready
-{
-  "status": "ready",
-  "draining": false
-}
+$ echo $?
+1
 ```
 
-### `synapse health check`
+#### Example: With Env Vars
 
-Full health check — aggregates database connectivity, pool stats, queue depth, and WebSocket connections.
+```bash
+export SYNAPSE_BASE_URL="https://api.example.com"
+export SYNAPSE_API_KEY="sk-test-123456"
 
-```
-$ synapse health check
-{
-  "status": "healthy",
-  "version": "0.1.0",
-  "db": "connected",
-  "db_pool": {
-    "active_connections": 2,
-    "idle_connections": 8,
-    "max_connections": 10,
-    "usage_percent": 20.0
-  },
-  "pending_queue_depth": 0,
-  "current_batch_size": 50,
-  "ws_connection_count": 3
-}
+synapse transactions get 550e8400-e29b-41d4-a716-446655440000
 ```
 
-Returns exit code `1` when the server responds with a non-2xx status.
+## Output Format Details
 
-### `synapse health errors`
+### Table Format
 
-Lists all registered API error codes and their descriptions.
-
+Displays transaction data in a human-readable table with key-value pairs:
 ```
-$ synapse health errors --json
-{
-  "errors": {
-    "E001": "Transaction not found",
-    "E002": "Invalid asset code"
-  },
-  "version": "1.0.0"
-}
+ID      <id>
+Status  <status>
+Amount  <amount>
+Asset   <asset_code>
 ```
 
-An empty error catalog is a valid response — never null.
+### JSON Format
 
-## Stats commands
+Outputs the full transaction object as pretty-printed JSON. Useful for piping to other tools:
 
-### `synapse stats status`
-
-Transaction counts grouped by status.
-
-```
-$ synapse stats status
-STATUS     COUNT
----------  -----
-pending    12
-completed  340
-failed     3
+```bash
+synapse transactions get <id> --format json | jq '.status'
 ```
 
-```
-$ synapse stats status --json
-[
-  { "status": "pending", "count": 12 },
-  { "status": "completed", "count": 340 },
-  { "status": "failed", "count": 3 }
-]
-```
+## Not-Found Handling
 
-### `synapse stats daily`
+HTTP 404 responses are surfaced distinctly:
+- Exit code: `1`
+- Stderr message: `transaction not found: <error message>`
+- This distinguishes "record doesn't exist" from network errors or server failures
 
-Daily totals for the last N days (default 7, max 365).
+## Testing
 
-```
-$ synapse stats daily --days 3
-DATE        TRANSACTIONS  TOTAL AMOUNT
-----------  ------------  ------------
-2026-06-25  18            9000.00
-2026-06-26  22            11500.00
-2026-06-27  10            5100.00
+Run integration tests (requires mock server):
+
+```bash
+cargo test --test transactions_get_integration
 ```
 
-### `synapse stats assets`
+Run all tests:
 
-Totals grouped by asset code.
-
+```bash
+cargo test
 ```
-$ synapse stats assets
-ASSET  TRANSACTIONS  TOTAL AMOUNT
------  ------------  ------------
-USD    290           145000.00
-XLM    65            3250.00
-```
-
-### `synapse stats cache`
-
-Query cache and idempotency cache metrics.
-
-```
-$ synapse stats cache --json
-{
-  "query_cache": { ... },
-  "idempotency_cache_hits": 512,
-  "idempotency_cache_misses": 44,
-  ...
-}
-```
-
-## Flags
-
-All subcommands accept `--json` to switch from the default table output to pretty-printed JSON.

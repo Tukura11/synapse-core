@@ -1,60 +1,61 @@
-use anyhow::{bail, Result};
-use serde::de::DeserializeOwned;
+use serde_json::Value;
 
-/// Minimal HTTP client for the Synapse API.
-pub struct ApiClient {
-    http: reqwest::Client,
+#[derive(Debug)]
+pub enum ClientError {
+    NotFound(String),
+    Http { status: u16, body: String },
+    Network(String),
+}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClientError::NotFound(msg) => write!(f, "Not found: {}", msg),
+            ClientError::Http { status, body } => write!(f, "HTTP {}: {}", status, body),
+            ClientError::Network(msg) => write!(f, "Network error: {}", msg),
+        }
+    }
+}
+
+pub struct SynapseApiClient {
     base_url: String,
     api_key: String,
 }
 
-impl ApiClient {
-    pub fn new(base_url: &str, api_key: &str) -> Self {
+impl SynapseApiClient {
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
         Self {
-            http: reqwest::Client::new(),
-            base_url: base_url.to_string(),
-            api_key: api_key.to_string(),
+            base_url: base_url.into(),
+            api_key: api_key.into(),
         }
     }
 
-    /// GET `path` and deserialise the JSON body into `T`.
-    pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .http
+    /// Fetch a transaction by ID. Returns NotFound for 404, Http for other errors.
+    pub async fn get_transaction(&self, id: &str) -> Result<Value, ClientError> {
+        let url = format!("{}/transactions/{}", self.base_url, id);
+        let client = reqwest::Client::new();
+
+        let resp = client
             .get(&url)
             .header("X-API-Key", &self.api_key)
             .send()
-            .await?;
+            .await
+            .map_err(|e| ClientError::Network(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
+        let status = resp.status().as_u16();
+
+        if status == 404 {
             let body = resp.text().await.unwrap_or_default();
-            bail!("HTTP {}: {}", status, body);
+            return Err(ClientError::NotFound(body));
         }
-        Ok(resp.json::<T>().await?)
-    }
 
-    /// GET `path` with an optional query string and deserialise the JSON body into `T`.
-    pub async fn get_with_query<T: DeserializeOwned>(
-        &self,
-        path: &str,
-        query: &[(&str, &str)],
-    ) -> Result<T> {
-        let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .http
-            .get(&url)
-            .header("X-API-Key", &self.api_key)
-            .query(query)
-            .send()
-            .await?;
-
-        let status = resp.status();
-        if !status.is_success() {
+        if status >= 400 {
             let body = resp.text().await.unwrap_or_default();
-            bail!("HTTP {}: {}", status, body);
+            return Err(ClientError::Http { status, body });
         }
-        Ok(resp.json::<T>().await?)
+
+        resp.json::<Value>()
+            .await
+            .map_err(|e| ClientError::Network(e.to_string()))
     }
 }
