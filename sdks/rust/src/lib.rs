@@ -15,7 +15,6 @@ pub mod pagination;
 pub mod resources;
 pub mod retry;
 
-pub use admin::AdminClient;
-pub use client::{SynapseClient, SynapseClientBuilder};
+pub use client::SynapseClient;
 pub use error::SynapseError;
-pub use models::{ListParams, SearchParams, Transaction, TransactionList, TransactionSearch};
+pub use models::{ListParams, SearchParams};
