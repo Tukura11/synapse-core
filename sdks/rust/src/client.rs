@@ -5,8 +5,9 @@ use serde::Serialize;
 
 /// HTTP client for the Synapse public API.
 ///
-/// Construct via [`SynapseClient::builder`]. All requests are issued with the
-/// configured API key and are retried automatically on transient failures.
+/// Construct via [`SynapseClient::new`] or [`SynapseClient::builder`]. All
+/// requests are issued with the configured API key and are retried
+/// automatically on transient failures.
 #[derive(Clone)]
 pub struct SynapseClient {
     pub(crate) http: reqwest::Client,
@@ -25,6 +26,11 @@ pub struct SynapseClientBuilder {
 }
 
 impl SynapseClient {
+    /// Convenience constructor; equivalent to `SynapseClient::builder(base_url, api_key).build()`.
+    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
+        Self::builder(base_url, api_key).build()
+    }
+
     /// Return a builder for constructing a [`SynapseClient`].
     pub fn builder(
         base_url: impl Into<String>,
@@ -145,17 +151,13 @@ impl SynapseClient {
 }
 
 impl SynapseClientBuilder {
-    /// Set the maximum total number of attempts, including the first (default: 3).
-    ///
-    /// Values below 1 are treated as 1 (no retries).
+    /// Set the maximum total number of attempts (default: 3).
     pub fn max_attempts(mut self, n: u32) -> Self {
         self.max_attempts = n.max(1);
         self
     }
 
-    /// Disable retry behaviour. The first failure is returned immediately.
-    ///
-    /// Use this when the caller manages its own retry loop.
+    /// Disable retry behaviour.
     pub fn disable_retries(mut self) -> Self {
         self.max_attempts = 1;
         self
