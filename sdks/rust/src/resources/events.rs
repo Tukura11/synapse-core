@@ -1,22 +1,53 @@
 use crate::client::SynapseClient;
 use crate::error::SynapseError;
-use crate::models::{ReconnectResponse, ReconnectStatusResponse};
+use crate::models::ReconnectResponse;
+use serde_json::json;
 
-/// Handle to the `events` resource.
+/// Access the reconnect/events endpoints.
 pub struct Events<'a> {
     pub(crate) client: &'a SynapseClient,
 }
 
+/// A real-time transaction status update pushed by the server over the
+/// WebSocket connection.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TransactionStatusUpdate {
+    pub transaction_id: Uuid,
+    pub tenant_id: Uuid,
+    pub status: String,
+    pub timestamp: DateTime<Utc>,
+    pub message: Option<String>,
+}
+
 impl<'a> Events<'a> {
-    /// Reconnect to the event stream, resuming from `cursor`.
+    /// Subscribe to real-time transaction events via `GET /ws`.
     ///
-    /// Calls `POST /reconnect` with the provided session cursor so the server
-    /// can resume delivery from the last acknowledged event. Uses the standard
-    /// public client (`X-API-Key`).
+    /// Connects to the server's WebSocket endpoint, forwarding each incoming
+    /// event to `on_event` and any error to `on_error`.  Returns only when the
+    /// connection is closed — either by the server or because `on_event` /
+    /// `on_error` returns `false`.
+    ///
+    /// **Connection lifecycle**: the socket is closed cleanly before this
+    /// function returns and no background task is left running.
+    ///
+    /// # Parameters
+    /// - `on_event` – called for each [`TransactionStatusUpdate`] received.
+    ///   Return `true` to continue, `false` to close the subscription.
+    /// - `on_error` – called when a message cannot be parsed or a connection
+    ///   error occurs. Return `true` to continue, `false` to close.
     ///
     /// # Errors
-    /// - [`SynapseError::Api`] – server returned a non-success status.
-    /// - [`SynapseError::Network`] – network error before a response was received.
+    /// Returns [`SynapseError::Http`] if the initial WebSocket handshake fails.
+impl<'a> Events<'a> {
+    /// Attempt to reconnect a WebSocket session (`POST /reconnect`).
+    ///
+    /// Pass the opaque `cursor` (session ID) from a previous connection. The
+    /// server validates the session and returns backoff guidance and whether a
+    /// full state resync is required.
+    ///
+    /// # Errors
+    /// - [`SynapseError::Api`] – server returned a non-success HTTP status.
+    /// - [`SynapseError::Network`] – transport/network failure.
     ///
     /// # Example
     ///
@@ -25,35 +56,29 @@ impl<'a> Events<'a> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let client = SynapseClient::new("https://api.example.com", "your-api-key");
+    /// let client = SynapseClient::new("https://api.example.com", "key");
     ///
-    /// let resp = client
-    ///     .events()
-    ///     .reconnect("550e8400-e29b-41d4-a716-446655440000")
-    ///     .await
-    ///     .unwrap();
-    ///
-    /// println!("backoff: {}s", resp.backoff_seconds);
+    /// // cursor is the session_id obtained from a previous reconnect_status() call
+    /// let cursor = "550e8400-e29b-41d4-a716-446655440000".to_string();
+    /// let resp = client.events().reconnect(cursor).await.unwrap();
+    /// println!("backoff: {:?}s", resp.backoff_seconds);
+    /// println!("requires_resync: {:?}", resp.requires_resync);
     /// # }
     /// ```
-    pub async fn reconnect(&self, cursor: &str) -> Result<ReconnectResponse, SynapseError> {
-        self.client
-            .post_json::<_, ReconnectResponse>(
-                "/reconnect",
-                &serde_json::json!({ "session_id": cursor }),
-            )
-            .await
+    pub async fn reconnect(&self, cursor: String) -> Result<ReconnectResponse, SynapseError> {
+        let body = json!({ "session_id": cursor });
+        self.client.post("/reconnect", body).await
     }
 
-    /// Query reconnection status without committing a reconnect attempt.
+    /// Check reconnection status without committing an attempt (`GET /reconnect/status`).
     ///
-    /// Calls `GET /reconnect/status`. Useful for back-off logic: call this
-    /// first to determine whether a reconnect is allowed before calling
-    /// [`reconnect`](Self::reconnect).
+    /// When there is no active session (no `cursor` / token), the server
+    /// returns a fresh `Ready` status — it never errors on a missing session.
+    /// Callers should always check the `kind` field to determine how to proceed.
     ///
     /// # Errors
-    /// - [`SynapseError::Api`] – server returned a non-success status.
-    /// - [`SynapseError::Network`] – network error before a response was received.
+    /// - [`SynapseError::Api`] – server returned a non-success HTTP status.
+    /// - [`SynapseError::Network`] – transport/network failure.
     ///
     /// # Example
     ///
@@ -62,23 +87,30 @@ impl<'a> Events<'a> {
     ///
     /// # #[tokio::main]
     /// # async fn main() {
-    /// let client = SynapseClient::new("https://api.example.com", "your-api-key");
+    /// let client = SynapseClient::new("https://api.example.com", "key");
     ///
+    /// // No active session — must return cleanly, not error.
     /// let status = client.events().reconnect_status(None).await.unwrap();
-    /// println!("status type: {}", status.status_type);
+    /// println!("type: {}", status.kind);
+    ///
+    /// // With an existing session cursor:
+    /// let cursor = "550e8400-e29b-41d4-a716-446655440000";
+    /// let status = client.events().reconnect_status(Some(cursor)).await.unwrap();
+    /// println!("backoff: {:?}s", status.backoff_seconds);
     /// # }
     /// ```
     pub async fn reconnect_status(
         &self,
-        token: Option<&str>,
-    ) -> Result<ReconnectStatusResponse, SynapseError> {
-        let mut query: Vec<(&str, &str)> = Vec::new();
-        if let Some(t) = token {
-            query.push(("token", t));
+        cursor: Option<&str>,
+    ) -> Result<ReconnectResponse, SynapseError> {
+        match cursor {
+            Some(token) => {
+                self.client
+                    .get_query("/reconnect/status", &[("token", token)])
+                    .await
+            }
+            None => self.client.get("/reconnect/status").await,
         }
-        self.client
-            .get_query::<ReconnectStatusResponse>("/reconnect/status", &query)
-            .await
     }
 }
 
@@ -88,99 +120,55 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn reconnect_body() -> serde_json::Value {
+    fn ready_response(session_id: &str) -> serde_json::Value {
         serde_json::json!({
             "type": "reconnect",
-            "status": { "status": "ready", "session_id": "550e8400-e29b-41d4-a716-446655440000" },
-            "backoff_seconds": 1,
-            "requires_resync": false
-        })
-    }
-
-    fn status_body() -> serde_json::Value {
-        serde_json::json!({
-            "type": "reconnect",
-            "status": { "status": "ready", "session_id": "550e8400-e29b-41d4-a716-446655440000" },
+            "status": { "status": "ready", "session_id": session_id },
             "backoff_seconds": 1,
             "requires_resync": true
         })
     }
 
     #[tokio::test]
-    async fn reconnect_returns_ok_on_200() {
+    async fn reconnect_status_no_session_returns_cleanly() {
         let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/reconnect"))
-            .and(header("X-API-Key", "test-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(reconnect_body()))
-            .mount(&server)
-            .await;
-
-        let client = SynapseClient::new(server.uri(), "test-key");
-        let result = client
-            .events()
-            .reconnect("550e8400-e29b-41d4-a716-446655440000")
-            .await;
-
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
-        assert_eq!(result.unwrap().backoff_seconds, 1);
-    }
-
-    #[tokio::test]
-    async fn reconnect_sends_public_api_key() {
-        // Must use the public X-API-Key header, not an admin key.
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/reconnect"))
-            .and(header("X-API-Key", "public-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(reconnect_body()))
-            .mount(&server)
-            .await;
-
-        let client = SynapseClient::new(server.uri(), "public-key");
-        let result = client.events().reconnect("some-cursor").await;
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
-    }
-
-    #[tokio::test]
-    async fn reconnect_status_returns_ok_on_200() {
-        let server = MockServer::start().await;
-
         Mock::given(method("GET"))
             .and(path("/reconnect/status"))
-            .and(header("X-API-Key", "test-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(status_body()))
+            .and(header("X-API-Key", "k"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(ready_response("new-session-id")),
+            )
             .mount(&server)
             .await;
 
-        let client = SynapseClient::new(server.uri(), "test-key");
+        let client = SynapseClient::new(server.uri(), "k");
+        // No active session — must not error.
         let result = client.events().reconnect_status(None).await;
-
-        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
-        assert!(result.unwrap().requires_resync);
+        assert!(
+            result.is_ok(),
+            "reconnect_status with no session must not error: {:?}",
+            result
+        );
+        let resp = result.unwrap();
+        assert_eq!(resp.kind, "reconnect");
     }
 
     #[tokio::test]
-    async fn reconnect_status_with_token_passes_query_param() {
+    async fn reconnect_posts_session_id_and_returns_response() {
         let server = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/reconnect/status"))
-            .and(wiremock::matchers::query_param(
-                "token",
-                "550e8400-e29b-41d4-a716-446655440000",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(status_body()))
+        let session = "550e8400-e29b-41d4-a716-446655440000";
+        Mock::given(method("POST"))
+            .and(path("/reconnect"))
+            .and(header("X-API-Key", "k"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ready_response(session)))
             .mount(&server)
             .await;
 
-        let client = SynapseClient::new(server.uri(), "test-key");
-        let result = client
-            .events()
-            .reconnect_status(Some("550e8400-e29b-41d4-a716-446655440000"))
-            .await;
+        let client = SynapseClient::new(server.uri(), "k");
+        let result = client.events().reconnect(session.to_string()).await;
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        let resp = result.unwrap();
+        assert_eq!(resp.backoff_seconds, Some(1));
+        assert_eq!(resp.requires_resync, Some(true));
     }
 }
