@@ -108,6 +108,22 @@ pub struct ListParams {
     pub to_date: Option<String>,
 }
 
+/// Filters for [`Transactions::export`].
+///
+/// The SDK returns raw export bytes unchanged so callers can process CSV or
+/// JSON themselves.
+#[derive(Debug, Default)]
+pub struct TransactionExportFilters {
+    /// Export format, either `csv` or `json`. Defaults to CSV.
+    pub format: Option<String>,
+    /// Inclusive start date filter (YYYY-MM-DD).
+    pub from: Option<String>,
+    /// Inclusive end date filter (YYYY-MM-DD).
+    pub to: Option<String>,
+    /// Transaction status filter.
+    pub status: Option<String>,
+    /// Asset code filter.
+    pub asset_code: Option<String>,
 // ── GraphQL models (issue #634) ───────────────────────────────────────────────
 
 /// Request body for `POST /graphql`.

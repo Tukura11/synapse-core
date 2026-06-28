@@ -40,6 +40,14 @@ pub enum SynapseError {
     #[error("HTTP {status}: {body}")]
     Http { status: u16, body: String },
 
+    /// The server returned a not-found result for a resource lookup.
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    /// The server rejected a cursor or pagination token.
+    #[error("invalid cursor: {0}")]
+    InvalidCursor(String),
+
     /// The server returned a non-2xx response for an API request.
     /// A non-success API response with a structured message.
     #[error("API error {status}: {message}")]
@@ -68,6 +76,9 @@ pub enum SynapseError {
     #[error("network error: {0}")]
     Network(#[from] reqwest::Error),
 
+    /// The body could not be decoded from the server response.
+    #[error("decode error: {0}")]
+    Decode(#[from] serde_json::Error),
     /// The response body could not be decoded as valid JSON.
     #[error("decode error: {0}")]
     Decode(String),
@@ -103,6 +114,7 @@ impl SynapseError {
             SynapseError::Network(_) => true,
             SynapseError::Api { status, .. } => *status >= 500,
             SynapseError::Http { status, .. } => *status >= 500,
+            SynapseError::Decode(_) => false,
             SynapseError::Api { status, .. } => *status >= 500,
             SynapseError::NotFound(_)
             | SynapseError::InvalidCursor(_)

@@ -17,4 +17,6 @@ pub mod retry;
 
 pub use client::SynapseClient;
 pub use error::SynapseError;
+pub use models::{ListParams, SearchParams, Transaction, TransactionList, TransactionSearch, TransactionExportFilters};
+pub use pagination::PageIter;
 pub use models::{ListParams, SearchParams, Settlement, SettlementList, SettlementParams};
